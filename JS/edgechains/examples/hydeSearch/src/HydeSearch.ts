@@ -2,6 +2,7 @@ import { Jsonnet } from "@hanazuki/node-jsonnet";
 import { OpenAiEndpoint } from "@arakoodev/edgechains.js";
 import { PostgresClient } from "@arakoodev/edgechains.js";
 import type { ArkRequest } from "@arakoodev/edgechains.js";
+import {CohereEndpoint} from "@arakoodev/edgechains.js"
 import * as path from "path";
 import { Hono } from "hono";
 const HydeSearchRouter = new Hono();
@@ -25,14 +26,32 @@ export interface HydeFragmentData {
 
 async function hydeSearchAdaEmbedding(arkRequest: ArkRequest, apiKey: string, orgId: string) {
     try {
-        const gpt3endpoint = new OpenAiEndpoint(
-            "https://api.openai.com/v1/chat/completions",
-            apiKey,
-            orgId,
-            "gpt-3.5-turbo",
-            "user",
-            parseInt("0.7")
-        );
+        const chatEndpoint = new CohereEndpoint({
+            apiBase: 'https://api.cohere.ai/v1',
+            apiKey: 'Dm3J6apUSzbpf2Yxdb88mJ1R1gnhRT58GpCc308z',
+            model: 'command',
+            maxRetries: 3,
+            timeout: 30000,
+            temperature: 0.75,
+        })
+
+        const embeddingEndpoint = new CohereEndpoint({
+            apiBase: 'https://api.cohere.ai/v1',
+            apiKey: 'Dm3J6apUSzbpf2Yxdb88mJ1R1gnhRT58GpCc308z',
+            model: 'embed-english-v3.0',
+            maxRetries: 3,
+            timeout: 30000,
+            temperature: 0.75,
+        })
+
+        // const gpt3endpoint = new OpenAiEndpoint(
+        //     "https://api.openai.com/v1/chat/completions",
+        //     apiKey,
+        //     orgId,
+        //     "gpt-3.5-turbo",
+        //     "user",
+        //     parseInt("0.7")
+        // );
         // Get required params from API...
         const table = "ada_hyde_prod";
         const namespace = "360_docs";
@@ -60,18 +79,27 @@ async function hydeSearchAdaEmbedding(arkRequest: ArkRequest, apiKey: string, or
         const prompt = JSON.parse(hydeLoader).prompt;
 
         // Block and get the response from GPT3
-        const gptResponse = await gpt3endpoint.gptFn(prompt);
+        // const gptResponse = await gpt3endpoint.gptFn(prompt);
+        const chatResponse = await chatEndpoint.chatCompletion(prompt);
 
         // Chain 1 ==> Get Gpt3Response & split
-        const gpt3Responses = gptResponse.split("\n");
+        const chatResponses = chatResponse.message.split("\n");
+
+        console.log("chatResponses: ", chatResponses)
 
         // Chain 2 ==> Get Embeddings from OpenAI using Each Response
         const embeddingsListChain: Promise<number[][]> = Promise.all(
-            gpt3Responses.map(async (resp) => {
-                const embedding = await gpt3endpoint.embeddings(resp);
-                return embedding;
+            chatResponses.map(async (resp) => {
+                const embedding = await embeddingEndpoint.getEmbeddings(resp, {
+                    inputType: "search_query",
+                    // embedding_types: ["float"]
+                });
+                console.log("embedding: ", embedding)
+                return embedding.embeddings.map(parseFloat);
             })
         );
+
+        console.log("embeddingsListChain: ", await embeddingsListChain)
 
         // Chain 5 ==> Query via EmbeddingChain
         const dbClient = new PostgresClient(
@@ -128,12 +156,16 @@ async function hydeSearchAdaEmbedding(arkRequest: ArkRequest, apiKey: string, or
             { role: "user", content: finalPromptUser },
         ];
 
-        const finalAnswer = await gpt3endpoint.gptFnChat(chatMessages);
+        // const finalAnswer = await gpt3endpoint.gptFnChat(chatMessages);
+        const finalAnswer = (await chatEndpoint.chatCompletion(chatMessages)).message;
 
         const response = {
             wordEmbeddings: queryResult,
-            finalAnswer: finalAnswer,
+            finalAnswer,
         };
+
+        console.log(response)
+
         return response;
     } catch (error) {
         // Handle errors here
